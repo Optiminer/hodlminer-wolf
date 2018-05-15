@@ -1,4 +1,5 @@
 #include <string.h>
+#include <openssl/aes.h>
 #include <openssl/evp.h>
 #include <openssl/sha.h>
 #include <x86intrin.h>

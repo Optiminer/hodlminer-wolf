@@ -1,14 +1,15 @@
-.TH MINERD 1 "March 2016" "cpuminer 2.4.3"
+.TH MINERD 1 "Jan 2018" "hodlminer 2.4.6"
 .SH NAME
-hodlminer \- CPU miner for Hodlcoin
+hodlminer \- CPU miner for Hodl based coins
 .SH SYNOPSIS
 .B hodlminer
 [\fIOPTION\fR]...
 .SH DESCRIPTION
 .B hodlminer
-is a multi-threaded CPU miner for Hodlcoin.
+is a multi-threaded CPU miner for Hodl based coins.
 It supports the getwork and getblocktemplate (BIP 22) methods,
 as well as the Stratum mining protocol.
+It also contains a fix for bip34 bug that only occurs at block height 32k-65k.
 .PP
 In its normal mode of operation, \fBhodlminer\fR connects to a mining server
 (specified with the \fB\-o\fR option), receives work from it and starts hashing.
@@ -42,7 +43,7 @@ hodlminer \-o stratum+tcp://hodl.blockquarry.com:8332 \-u user.worker -p x -q
 .RE
 .fi
 .PP
-To mine to a local Hodlcoin instance running on port 18332,
+To mine to a local Hodl based instance running on port 18332,
 authenticating with username "rpcuser" and password "rpcpass":
 .PP
 .nf

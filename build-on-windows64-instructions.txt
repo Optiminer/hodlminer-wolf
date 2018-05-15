@@ -1,0 +1,40 @@
+### Windows build steps:
+install in order:
+  - [GNUstep MSYS System](http://ftpmain.gnustep.org/pub/gnustep/binaries/windows/gnustep-msys-system-0.30.0-setup.exe)
+  - [GNUstep Core](http://ftpmain.gnustep.org/pub/gnustep/binaries/windows/gnustep-core-0.35.0-setup.exe)
+  - [GNUstep Devel](http://ftpmain.gnustep.org/pub/gnustep/binaries/windows/gnustep-devel-1.4.0-setup.exe)
+  - [GNUstep Cairo](http://ftpmain.gnustep.org/pub/gnustep/binaries/windows/gnustep-cairo-0.35.0-setup.exe)
+  - [ProjectCenter](http://ftpmain.gnustep.org/pub/gnustep/binaries/windows/ProjectCenter-0.6.2-35-setup.exe)
+  - [Gorm](http://ftpmain.gnustep.org/pub/gnustep/binaries/windows/gorm-1.2.23-35-setup.exe)
+
+**GNUstep Cairo**, **ProjectCenter**, **Gorm** are probably not needed but install them anyways.
+
+WARNING:: DO NOT INSTALL THIS ON A MOUNTED CIFS/NFS share, it has to be on NTFS as it uses REPARSE files.
+
+Intsall [Win-builds 1.5.0](http://win-builds.org/1.5.0/win-builds-1.5.0.exe) and choose and choose **Cygwin or MYSY**, and select **x86_64**
+set path to **/c/bin/GNUstep/msys/** (Or the path you have installed GNUstep).
+Clone github repo **https://github.com/ghobson2013/hodlminer-wolf**.
+Open **C:\bin\GNUstep\msys\1.0\msys.bat** and cd to cloned repo path.
+Run the following commands:
+  - **PATH="/c/bin/GNUstep/msys/opt/windows_64/bin/:$PATH"** (or the path you have installed GNUstep) to add opt/windows_64 to path.
+  - run **./autogen**
+  - use one of the scripts **mingw64.sh** (build native extension for CPU), **mingw64aes.sh** for AES support, **mingw64sse2.sh** for SSE2 support, **mingw64avx(+aes).sh** for AVX(_AES) support and **mingw64avx2(+aes).sh** for AVX2(_AES) support
+  - the built **hodlminer.exe** binary requires libraries (copy them from or set PATH to **C:\bin\GNUstep\msys\opt\windows_64\bin** when running):
+    - libcrypto.dll
+    - libcrypto-1.0.0.dll
+    - libcurl-4.dll
+    - libgcc_s_dw2-1.dll
+    - libgcc_s_seh-1.dll
+    - libgmp-10.dll
+    - libgmpxx-4.dll
+    - libjansson-4.dll
+    - libjson-c-2.dll
+    - libsasl.dll
+    - libsigc-2.0-0.dll
+    - libssl.dll
+    - libssl-1.0.0.dll
+    - libstdc++-6.dll
+    - libwinpthread-1.dll
+    - libz-1.dll
+
+

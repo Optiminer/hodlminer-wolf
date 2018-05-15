@@ -1,6 +1,8 @@
+Build.My
+Pull.Master
 
-minerd
-minerd.exe
+hodlminer
+hodlminer.exe
 *.o
 
 autom4te.cache
@@ -16,7 +18,7 @@ depcomp
 missing
 install-sh
 stamp-h1
-cpuminer-config.h*
+hodlminer-config.h*
 compile
 config.log
 config.status

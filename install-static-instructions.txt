@@ -1,0 +1,361 @@
+If you want to compile cpuminer statically, you will notice it fails quite fast with the output similar to:
+
+<pre>
+cpuminer-util.o: In function `stratum_connect':
+util.c:(.text+0x333b): undefined reference to `curl_easy_perform'
+util.c:(.text+0x335f): undefined reference to `curl_easy_cleanup'
+util.c:(.text+0x3390): undefined reference to `curl_easy_setopt'
+cpuminer-util.o: In function `stratum_disconnect':
+util.c:(.text+0x3422): undefined reference to `curl_easy_cleanup'
+cpuminer-util.o: In function `stratum_handle_method':
+util.c:(.text+0x4f41): undefined reference to `curl_easy_cleanup'
+collect2: error: ld returned 1 exit status
+Makefile:1397: recipe for target 'cpuminer' failed
+</pre>
+
+This is because you don't have the right version of libraries and development packages installed in your system.
+
+
+To compile cpuminer statically, you will need to:
+
+* compile and install OpenSSL
+* compile and install curl (libcurl)
+* slightly modify cpuminer compilation flags
+
+
+Compiling will make a bit of a mess in your system - lots of packages installed, and compiling from source leaves lots of things on your system (depending how much time you want to invest in it).
+
+Therefore, it's easiest if you compile in a separate VM (i.e. KVM) or container (i.e. LXD).
+
+Also, you may want to use a new version of gcc - in theory, newer gcc produces slightly faster binaries.
+
+Compilation below was made on Ubuntu 17.10, but should also work on other Ubuntu flavours and on Debian, and with little modifications (installed package names) on other distributions, like CentOS, Fedora etc.
+
+
+== OpenSSL compilation ==
+
+You have to compile OpenSSL first - because libcurl will use it.
+
+<pre>
+# cd /usr/src
+# wget https://www.openssl.org/source/openssl-1.1.0g.tar.gz
+# tar xpf openssl-1.1.0g.tar.gz
+# cd openssl-1.1.0g
+</pre>
+
+In the "config" file, make sure to add options= line as in a diff below, around line 644:
+
+<source lang="diff">
+# diff -u config.orig config
+--- config.orig 2017-11-02 14:29:02.000000000 +0000
++++ config      2017-11-22 15:11:47.479956928 +0000
+@@ -644,6 +644,7 @@
+            OUT="linux-x32"
+        else
+            OUT="linux-x86_64"
++           options="$options no-shared"
+        fi ;;
+   *86-*-linux2)
+         # On machines where the compiler understands -m32, prefer a
+</source>
+
+
+Run ./config and make sure no-shared option is listed (marked <----- here below):
+
+<pre>
+# ./config 
+Operating system: x86_64-whatever-linux2
+Configuring for linux-x86_64
+Configuring OpenSSL version 1.1.0g (0x1010007fL)
+    no-asan         [default]  OPENSSL_NO_ASAN
+    no-crypto-mdebug [default]  OPENSSL_NO_CRYPTO_MDEBUG
+    no-crypto-mdebug-backtrace [default]  OPENSSL_NO_CRYPTO_MDEBUG_BACKTRACE
+    no-dynamic-engine [forced]  
+    no-ec_nistp_64_gcc_128 [default]  OPENSSL_NO_EC_NISTP_64_GCC_128
+    no-egd          [default]  OPENSSL_NO_EGD
+    no-fuzz-afl     [default]  OPENSSL_NO_FUZZ_AFL
+    no-fuzz-libfuzzer [default]  OPENSSL_NO_FUZZ_LIBFUZZER
+    no-heartbeats   [default]  OPENSSL_NO_HEARTBEATS
+    no-md2          [default]  OPENSSL_NO_MD2 (skip dir)
+    no-msan         [default]  OPENSSL_NO_MSAN
+    no-rc5          [default]  OPENSSL_NO_RC5 (skip dir)
+    no-sctp         [default]  OPENSSL_NO_SCTP
+    no-shared       [option]                          <----------------------- here
+    no-ssl-trace    [default]  OPENSSL_NO_SSL_TRACE
+    no-ssl3         [default]  OPENSSL_NO_SSL3
+    no-ssl3-method  [default]  OPENSSL_NO_SSL3_METHOD
+    no-ubsan        [default]  OPENSSL_NO_UBSAN
+    no-unit-test    [default]  OPENSSL_NO_UNIT_TEST
+    no-weak-ssl-ciphers [default]  OPENSSL_NO_WEAK_SSL_CIPHERS
+    no-zlib         [default] 
+    no-zlib-dynamic [default] 
+Configuring for linux-x86_64
+(...)
+</pre>
+
+
+Finally, run make and make install - the process should finish without any errors:
+
+<pre>
+# make -j 8  # assuming you have 8 CPUs
+# make install
+</pre>
+
+
+== curl / libcurl compilation ==
+
+<pre>
+# cd /usr/src
+# wget https://github.com/curl/curl/archive/master.zip
+# unzip master.zip
+# cd curl-master/
+</pre>
+
+Run ./buildconf - you may need to install a couple of extra packages - like in an example below. Typically, you will need to install autoconf and libtool packages. Make sure they are all installed and ./buildconf runs without errors:
+
+<pre>
+# ./buildconf 
+buildconf: autoconf not found.
+            You need autoconf version 2.57 or newer installed.
+</pre>
+
+
+Run ./configure with --disable-shared flag - it should finish without errors, and you should see "Build libcurl:    Shared=no, Static=yes" in the summary at the end:
+
+<pre>
+# ./configure --disable-shared
+(...)
+configure: Configured to build curl/libcurl:
+
+  curl version:     7.57.0-DEV
+  Host setup:       x86_64-unknown-linux-gnu
+  Install prefix:   /usr/local
+  Compiler:         gcc
+  SSL support:      no      (--with-{ssl,gnutls,nss,polarssl,mbedtls,cyassl,axtls,winssl,darwinssl} )
+  SSH support:      no      (--with-libssh2)
+  zlib support:     no      (--with-zlib)
+  brotli support:   no      (--with-brotli)
+  GSS-API support:  no      (--with-gssapi)
+  TLS-SRP support:  no      (--enable-tls-srp)
+  resolver:         POSIX threaded
+  IPv6 support:     enabled
+  Unix sockets support: enabled
+  IDN support:      no      (--with-{libidn2,winidn})
+  Build libcurl:    Shared=no, Static=yes                <------------------ here
+  Built-in manual:  enabled
+  --libcurl option: enabled (--disable-libcurl-option)
+  Verbose errors:   enabled (--disable-verbose)
+  SSPI support:     no      (--enable-sspi)
+  ca cert bundle:   /etc/ssl/certs/ca-certificates.crt
+  ca cert path:     no
+  ca fallback:      no
+  LDAP support:     no      (--enable-ldap / --with-ldap-lib / --with-lber-lib)
+  LDAPS support:    no      (--enable-ldaps)
+  RTSP support:     enabled
+  RTMP support:     no      (--with-librtmp)
+  metalink support: no      (--with-libmetalink)
+  PSL support:      no      (libpsl not found)
+  HTTP2 support:    disabled (--with-nghttp2)
+  Protocols:        DICT FILE FTP GOPHER HTTP IMAP POP3 RTSP SMTP TELNET TFTP
+</pre>
+
+Finally, run:
+
+<pre>
+# make -j 8
+# make install
+</pre>
+
+
+== cpuminer compilation ==
+
+Now, we can compile cpuminer. We will use cpuminer-opt below:
+
+<pre>
+# cd /usr/src
+# wget -O cpuminer.zip https://github.com/JayDDee/cpuminer-opt/archive/master.zip
+# unzip cpuminer.zip
+# cd cpuminer-opt-master/
+</pre>
+
+
+Open "build.sh" file and change it as in the diff below (added LDFLAGS="-static"):
+
+<source lang="diff">
+--- build.sh.orig       2017-11-21 03:19:15.000000000 +0100
++++ build.sh    2017-11-24 14:46:15.000000000 +0100
+@@ -18,7 +18,7 @@
+ # Debian 7.7 / Ubuntu 14.04 (gcc 4.7+)
+ #extracflags="$extracflags -Ofast -flto -fuse-linker-plugin -ftree-loop-if-convert-stores"
+ 
+-CFLAGS="-O3 -march=native -Wall" CXXFLAGS="$CFLAGS -std=gnu++11" ./configure --with-curl
++CFLAGS="-O3 -march=native -Wall" CXXFLAGS="$CFLAGS -std=gnu++11" LDFLAGS="-static" ./configure --with-curl
+ 
+ make -j 4 
+</source>
+
+Now, run ./build.sh to compile a static version of cpuminer - the command should finish without any errors:
+
+<pre>
+# ./build.sh
+</pre>
+
+
+To verify the binary was compiled as a static one, run "file" - you should see "statically linked" in the output:
+
+<pre>
+# file cpuminer
+cpuminer: ELF 64-bit LSB executable, x86-64, version 1 (GNU/Linux), statically linked, for GNU/Linux 3.2.0, BuildID[sha1]=f36942ceb71fed6e89c57b265b59fb6076f37e37, stripped
+</pre>
+
+
+If on the other hand you see "dynamically linked" - it means that it's not a static compilation of cpuminer:
+
+<pre>
+cpuminer: ELF 64-bit LSB shared object, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, for GNU/Linux 3.2.0, BuildID[sha1]=b20c1bc37156485a74f1dd3f78d81e0ee1ab5b63, stripped
+</pre>
+
+
+== testing / benchmarking ==
+
+To see if it's running, use:
+
+<pre>
+# ./cpuminer --benchmark -a lyra2z
+
+         **********  cpuminer-opt 3.7.3  *********** 
+     A CPU miner with multi algo support and optimized for CPUs
+     with AES_NI and AVX extensions.
+     BTC donation address: 12tdvfF7KmAsihBXQXynT6E6th2c2pByTT
+     Forked from TPruvot's cpuminer-multi with credits
+     to Lucas Jones, elmad, palmd, djm34, pooler, ig0tik3d,
+     Wolf0, Jeff Garzik and Optiminer.
+
+CPU: Intel(R) Core(TM) i5-7440HQ CPU @ 2.80GHz
+CPU features: SSE2 AES AVX AVX2
+SW built on Nov 24 2017 with GCC 7.2.0
+SW features: SSE2 AES AVX AVX2
+Algo features: SSE2 AES AVX AVX2
+Start mining with SSE2 AES AVX2
+
+[2017-11-24 14:36:45] 4 miner threads started, using 'lyra2z' algorithm.
+[2017-11-24 14:36:46] CPU #1: 65.54 kH, 103.42 kH/s
+[2017-11-24 14:36:46] CPU #3: 65.54 kH, 103.16 kH/s
+[2017-11-24 14:36:46] Total: 131.07 kH, 206.58 kH/s, 50C
+[2017-11-24 14:36:46] CPU #2: 65.54 kH, 100.06 kH/s
+[2017-11-24 14:36:46] CPU #0: 65.54 kH, 97.43 kH/s
+
+[ctrl+c]
+</pre>
+
+
+== "Illegal instruction" when trying to run on a different server ==
+
+The binary may fail to run with "Illegal instruction" if it was compiled on a server with CPU newer than the one you're trying to run it now.
+
+When you start cpuminer in benchmark or in real running mode, you will see it prints some CPU features, and "SW features", among other things:
+
+<pre>
+CPU features: SSE2 AES AVX AVX2
+SW built on Nov 24 2017 with GCC 7.2.0
+SW features: SSE2 AES AVX AVX2 <-------------- here
+Algo features: SSE2 AES AVX AVX2
+Start mining with SSE2 AES AVX2
+</pre>
+
+
+If your CPU features are lower than SW features (i.e. if the CPU does not support AVX2), the program will crash with "Illegal instruction".
+
+Solution: building a binary with different "-march" flags. Examples are given in README.txt file:
+
+<pre>
+cpuminer-sse2.exe         -march=core2,      Core2   
+cpuminer-sse42.exe        -march=corei7,     Nehalem
+cpuminer-aes-sse42.exe    -maes -msse4.2     Westmere
+cpuminer-aes-avx.exe      -march=corei7-avx, Sandybridge, Ivybridge
+cpuminer-aes-avx2.exe     -march=core-avx2,  Haswell, Broadwell, Skylake, Kabylake
+</pre>
+
+
+Simply edit build.sh file, and change -march=native i.e. to -march=corei7-avx.
+
+For example, a binary built with -march=core2 will give the following output:
+
+<pre>
+CPU features: SSE2 AES AVX AVX2
+SW built on Nov 24 2017 with GCC 7.2.0
+SW features: SSE2
+Algo features: SSE2 AES AVX AVX2
+Start mining with SSE2
+</pre>
+
+
+== "FATAL: kernel too old" when trying to run on a different server ==
+
+The following means that you compiled cpuminer on a much newer operating system (i.e. cpuminer was compiled on Ubuntu 17.10, which is kernel 4.13, but you're trying to run it on CentOS 6, which is kernel 2.6.18):
+
+<pre>
+# ./cpuminer
+FATAL: kernel too old
+Segmentation fault
+</pre>
+
+Try building a binary on a similar system.
+
+
+
+== common compilation errors ==
+
+* ''./../depcomp: line 611: exec: g++: not found''
+
+Install g++ package.
+
+
+* ''cc1plus: error: unrecognized command line option "-std=gnu++11"''
+
+Your compiler is too old. Most likely you won't be able to build without some big changes in cpuminer code.
+
+
+* ''algo/m7m.c:4:10: fatal error: gmp.h: No such file or directory''
+
+Install libgmp-dev package.
+
+
+* ''/usr/bin/ld: cannot find -lz''
+
+Install zlib1g-dev package.
+
+
+* ''algo/m7m.c:206:5: error: unknown type name 'mp_bitcnt_t'; did you mean '__blkcnt_t'?''
+
+Your gmp library is too old (probably compiling on CentOS 6?).
+
+Remove any gmp library development files, download the sources and compile:
+
+<pre>
+# rpm -e gmp-devel gmp-static mpfr-devel
+# wget https://gmplib.org/download/gmp/gmp-6.1.2.tar.xz
+# tar xpf gmp-6.1.2.tar.xz
+# cd gmp-6.1.2
+# ./configure
+# make -j 8
+# make install
+</pre>
+
+
+* ''timeval.c:(.text+0xf): undefined reference to `clock_gettime''
+
+You may see it when building on CentOS 6. Add -static to CXXFLAGS in build.sh:
+
+<pre>
+CFLAGS="-O3 -march=native -Wall" CXXFLAGS="$CFLAGS -std=gnu++11 -static" ./configure --with-curl
+</pre>
+
+and add -lrt in Makefile.am, around line 181:
+
+<pre>
+cpuminer_LDADD<>= @LIBCURL@ @JANSSON_LIBS@ @PTHREAD_LIBS@ @WS2_LIBS@ -lssl -lcrypto -lgmp -lrt
+</pre>
+
+[[Category: HOWTOs]]
+

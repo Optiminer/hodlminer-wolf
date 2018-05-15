@@ -8,8 +8,77 @@
  * any later version.  See COPYING for more details.
  */
 
-#include "cpuminer-config.h"
+#include "hodlminer-config.h"
 #define _GNU_SOURCE
+
+#ifdef __APPLE__
+
+#ifndef PTHREAD_BARRIER_H_
+#define PTHREAD_BARRIER_H_
+
+#include <pthread.h>
+#include <errno.h>
+
+typedef int pthread_barrierattr_t;
+typedef struct
+{
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    int count;
+    int tripCount;
+} pthread_barrier_t;
+
+
+int pthread_barrier_init(pthread_barrier_t *barrier, const pthread_barrierattr_t *attr, unsigned int count)
+{
+    if(count == 0)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    if(pthread_mutex_init(&barrier->mutex, 0) < 0)
+    {
+        return -1;
+    }
+    if(pthread_cond_init(&barrier->cond, 0) < 0)
+    {
+        pthread_mutex_destroy(&barrier->mutex);
+        return -1;
+    }
+    barrier->tripCount = count;
+    barrier->count = 0;
+
+    return 0;
+}
+
+int pthread_barrier_destroy(pthread_barrier_t *barrier)
+{
+    pthread_cond_destroy(&barrier->cond);
+    pthread_mutex_destroy(&barrier->mutex);
+    return 0;
+}
+
+int pthread_barrier_wait(pthread_barrier_t *barrier)
+{
+    pthread_mutex_lock(&barrier->mutex);
+    ++(barrier->count);
+    if(barrier->count >= barrier->tripCount)
+    {
+        barrier->count = 0;
+        pthread_cond_broadcast(&barrier->cond);
+        pthread_mutex_unlock(&barrier->mutex);
+        return 1;
+    }
+    else
+    {
+        pthread_cond_wait(&barrier->cond, &(barrier->mutex));
+        pthread_mutex_unlock(&barrier->mutex);
+        return 0;
+    }
+}
+
+#endif // PTHREAD_BARRIER_H_
+#endif // __APPLE__
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,6 +105,7 @@
 #endif
 #include <jansson.h>
 #include <curl/curl.h>
+#include <openssl/rand.h>
 #include "compat.h"
 #include "miner.h"
 #include "hodl.h"
@@ -43,18 +113,47 @@
 #define PROGRAM_NAME		"hodlminer"
 #define LP_SCANTIME		60
 
+bool opt_debug = false;
+
 #ifdef __linux /* Linux specific policy and affinity management */
 #include <sched.h>
-static inline void drop_policy(void)
+static inline void idle_policy(int id)
 {
 	struct sched_param param;
 	param.sched_priority = 0;
 
 #ifdef SCHED_IDLE
-	if (unlikely(sched_setscheduler(0, SCHED_IDLE, &param) == -1))
+	if (likely(sched_setscheduler(0, SCHED_IDLE, &param) != -1)) {
+		if (opt_debug) {
+			applog(LOG_DEBUG,"set SCHED_IDLE on thread %d",id);
+		}
+		return;
+	}
 #endif
+
 #ifdef SCHED_BATCH
-		sched_setscheduler(0, SCHED_BATCH, &param);
+	if (likely(sched_setscheduler(0, SCHED_BATCH, &param) != -1)) {
+		if (opt_debug) {
+			applog(LOG_DEBUG,"set SCHED_BATCH on thread %d",id);
+		}
+		setpriority(PRIO_PROCESS, 0, 19);
+		return;
+	}
+#endif
+}
+
+static inline void batch_policy(int id)
+{
+	struct sched_param param;
+	param.sched_priority = 0;
+
+#ifdef SCHED_BATCH
+	if (likely(sched_setscheduler(0, SCHED_BATCH, &param) != -1)) {
+		if (opt_debug) {
+			applog(LOG_DEBUG,"set SCHED_BATCH on thread %d",id);
+		}
+		return;
+	}
 #endif
 }
 
@@ -68,9 +167,9 @@ static inline void affine_to_cpu(int id, int cpu)
 }
 #elif defined(__FreeBSD__) /* FreeBSD specific policy and affinity management */
 #include <sys/cpuset.h>
-static inline void drop_policy(void)
-{
-}
+static inline void idle_policy(int id) {}
+
+static inline void batch_policy(int id) {}
 
 static inline void affine_to_cpu(int id, int cpu)
 {
@@ -79,13 +178,106 @@ static inline void affine_to_cpu(int id, int cpu)
 	CPU_SET(cpu, &set);
 	cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_TID, -1, sizeof(cpuset_t), &set);
 }
-#else
-static inline void drop_policy(void)
-{
+#elif defined(__APPLE__) /* Apple OSX specific policy and affinity management */
+#include <sys/time.h>
+#include <sys/resource.h>
+#include <mach/mach_init.h>
+#include <mach/thread_policy.h>
+#include <mach/thread_act.h>
+#include <sched.h>
+#include <pthread.h>
+
+#define SYSCTL_THREAD_COUNT   "machdep.cpu.thread_count"
+
+typedef struct cpu_set {
+  uint32_t    count;
+} cpu_set_t;
+
+static int32_t core_count = 0;
+static pthread_once_t num_cores_once = PTHREAD_ONCE_INIT;
+
+static inline void CPU_ZERO(cpu_set_t *cs) { cs->count = 0; }
+static inline void CPU_SET(int num, cpu_set_t *cs) { cs->count |= (1 << num); }
+static inline int CPU_ISSET(int num, cpu_set_t *cs) { return (cs->count & (1 << num)); }
+
+static inline void core_count_init(void) {
+
+  size_t len = sizeof(core_count);
+  int ret = sysctlbyname(SYSCTL_THREAD_COUNT, &core_count, &len, 0, 0);
+  if (ret) {
+    applog(LOG_ERR,"error while get core count %d", ret);
+    return;
+  }
+
+  if (opt_debug)
+  applog(LOG_DEBUG, "number of cores: %s=%d",SYSCTL_THREAD_COUNT, core_count);
+
 }
 
-static inline void affine_to_cpu(int id, int cpu)
+int pthread_setaffinity_np(pthread_t thread, size_t cpu_size,
+                           cpu_set_t *cpu_set)
 {
+  thread_port_t mach_thread;
+  int core;
+  kern_return_t ret;
+
+  pthread_once(&num_cores_once,core_count_init);
+
+  for (core = 0; core < core_count; core++) {
+    if (CPU_ISSET(core, cpu_set)) break;
+  }
+
+  // printf("binding to core %d\n", core);
+  thread_affinity_policy_data_t policy = { core };
+  mach_thread = pthread_mach_thread_np(thread);
+  if (KERN_SUCCESS != (ret = thread_policy_set(mach_thread, THREAD_AFFINITY_POLICY,
+                    (thread_policy_t)&policy, 1))) {
+    applog(LOG_ERR,"failed to bind to core %d: %d\n", core, ret);
+    return -1;
+  }
+
+  return 0;
+}
+
+static inline void idle_policy(int id) {
+    if (likely(setpriority(PRIO_PROCESS,0,20) != -1)) {
+        if (opt_debug)
+        applog(LOG_DEBUG,"set priority for thread %d to %d",id,getpriority(PRIO_PROCESS,0));
+    } else {
+        applog(LOG_ERR,"can't set lower priority for thread %d: %d",id, errno);
+    }
+}
+
+static inline void batch_policy(int id) {
+    // reduce priority a little bit
+    if (likely(setpriority(PRIO_PROCESS,0,1) != -1)) {
+        if (opt_debug)
+        applog(LOG_DEBUG,"set priority for thread %d to %d",id,getpriority(PRIO_PROCESS,0));
+    } else {
+        applog(LOG_ERR,"can't set priority for thread %d: %d",id,errno);
+    }
+}
+
+static inline void affine_to_cpu(int id, int cpu) {
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(cpu,&cpuset);
+
+        pthread_t thread = pthread_self();
+        pthread_setaffinity_np(thread,sizeof(cpu_set_t),&cpuset);
+}
+
+#else
+static inline void idle_policy(int id) {
+	// empty
+}
+
+static inline void batch_policy(int id) {
+	// empty
+}
+
+static inline void affine_to_cpu(int id, int cpu) {
+	// empty
 }
 #endif
 		
@@ -110,7 +302,6 @@ static const char *algo_names[] = {
         [ALGO_HODL]		= "hodl",
 };
 
-bool opt_debug = false;
 static bool opt_drop_priority = false;
 bool opt_protocol = false;
 static bool opt_benchmark = false;
@@ -147,6 +338,7 @@ int longpoll_thr_id = -1;
 int stratum_thr_id = -1;
 struct work_restart *work_restart = NULL;
 static struct stratum_ctx stratum;
+bool aes_ni_supported = false;
 
 pthread_mutex_t applog_lock;
 static pthread_mutex_t stats_lock;
@@ -224,7 +416,7 @@ static char const short_options[] =
 #ifdef HAVE_SYSLOG_H
 	"S"
 #endif
-	"a:c:Dhp:Px:qr:R:s:t:T:o:u:O:V:d";
+	"a:c:Dhp:Px:qr:R:s:t:T:o:u:O:Vd";
 
 static struct option const options[] = {
 	{ "algo", 1, NULL, 'a' },
@@ -482,6 +674,9 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 		/* BIP 34: height in coinbase */
 		for (n = work->height; n; n >>= 8)
 			cbtx[cbtx_size++] = n & 0xff;
+		if (((work->height) > 32767) && ((work->height) < 65536)) {
+            		cbtx[cbtx_size++] = 0;
+        	}
 		cbtx[42] = cbtx_size - 43;
 		cbtx[41] = cbtx_size - 42; /* scriptsig length */
 		le32enc((uint32_t *)(cbtx+cbtx_size), 0xffffffff); /* sequence */
@@ -640,7 +835,8 @@ static void share_result(int result, const char *reason)
 	pthread_mutex_unlock(&stats_lock);
 	
 	sprintf(s, hashrate >= 1e6 ? "%.0f" : "%.2f", hashrate);
-	applog(LOG_INFO, "accepted: %lu/%lu (%.2f%%), %s hash/s %s",
+	applog(LOG_INFO, "%s: %lu/%lu (%.2f%%), %s hash/s %s",
+		   result ? "accepted" : "rejected",
 		   accepted_count,
 		   accepted_count + rejected_count,
 		   100. * accepted_count / (accepted_count + rejected_count),
@@ -1084,8 +1280,9 @@ static void *miner_thread(void *userdata)
 	 * and if that fails, then SCHED_BATCH. No need for this to be an
 	 * error if it fails */
 	if (opt_drop_priority) {
-		setpriority(PRIO_PROCESS, 0, 19);
-		drop_policy();
+		idle_policy(thr_id);
+	} else {
+		batch_policy(thr_id);
 	}
 
 	/* Cpu affinity only makes sense if the number of threads is a multiple
@@ -1137,10 +1334,14 @@ static void *miner_thread(void *userdata)
 		    }
 		    pthread_mutex_unlock(&g_work_lock);
 
-		    nNonce = (clock()+rand())%9999;
+		    if (likely(1 == RAND_bytes((unsigned char*)&nNonce, sizeof(nNonce)))) {
+			nNonce = nNonce % 9999;
+		    } else {
+		    	nNonce = (clock()+rand())%9999;
+		    }
 		}
-		
-		pthread_barrier_wait( &bar );		
+
+		pthread_barrier_wait( &bar );
 
 		if (memcmp(work.data, hodl_work.data, 76)) {
             work_free(&work);
@@ -1153,7 +1354,7 @@ static void *miner_thread(void *userdata)
 
 		gettimeofday(&tv_mid, NULL);
 		timeval_subtract(&diff, &tv_mid, &tv_start);
-		printf("Time for GenRandomGarbage: %f\n", (diff.tv_sec + 1e-6 * diff.tv_usec));
+		//printf("Time for GenRandomGarbage: %f\n", (diff.tv_sec + 1e-6 * diff.tv_usec));
 
 		pthread_barrier_wait( &bar );
 		gettimeofday(&tv_mid, NULL);
@@ -1268,8 +1469,19 @@ start:
 			goto out;
 		}
 		if (likely(val)) {
-			bool rc;
-			applog(LOG_INFO, "LONGPOLL pushed new work");
+
+                        bool rc;
+			char s[345];
+                        double hashrate = 0.;
+                        pthread_mutex_lock(&stats_lock);
+                        for (uint_fast16_t i = 0; i < opt_n_threads; i++)
+                            hashrate += thr_hashrates[i];
+                        pthread_mutex_unlock(&stats_lock);
+                        sprintf(s, hashrate >= 1e6 ? "%.0f" : "%.2f", hashrate);
+
+                        applog(LOG_INFO, "LONGPOLL pushed new work for block %d, target %04X, %s hash/s",
+                                    g_work.height, g_work.target[7], s);
+
 			res = json_object_get(val, "result");
 			soval = json_object_get(res, "submitold");
 			submit_old = soval ? json_is_true(soval) : false;
@@ -1408,7 +1620,7 @@ out:
 
 static void show_version_and_exit(void)
 {
-	printf(PACKAGE_STRING "\n built on " __DATE__ "\n features:"
+	printf(PACKAGE_STRING "\n built by ghobson on " __DATE__ "\n features:"
 #if defined(USE_ASM) && defined(__i386__)
 		" i386"
 #endif
@@ -1780,6 +1992,25 @@ static void signal_handler(int sig)
 }
 #endif
 
+#if defined(__i386__) || defined(__x86_64__)
+static inline int cpuid(int code, uint32_t where[4]) {
+	asm volatile("cpuid":"=a"(*where),"=b"(*(where+1)),
+		"=c"(*(where+2)),"=d"(*(where+3)):"a"(code));
+	return (int)where[0];
+}
+#endif
+
+static bool has_aes_ni()
+{
+#if defined(__i386__) || defined(__x86_64__)
+	uint32_t cpu_info[4];
+	cpuid(1, cpu_info);
+	return cpu_info[2] & (1 << 25);
+#else
+	return false;
+#endif
+}
+
 int main(int argc, char *argv[])
 {
 	struct thr_info *thr;
@@ -1820,6 +2051,9 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
+	aes_ni_supported = has_aes_ni();
+	applog(LOG_INFO, "CPU Supports AES-NI: %s", aes_ni_supported ? "YES" : "NO");
+
 #ifndef WIN32
 	if (opt_background) {
 		i = fork();
@@ -1857,7 +2091,7 @@ int main(int argc, char *argv[])
 
 #ifdef HAVE_SYSLOG_H
 	if (use_syslog)
-		openlog("cpuminer", LOG_PID, LOG_USER);
+		openlog("hodlminer", LOG_PID, LOG_USER);
 #endif
 
 	work_restart = calloc(opt_n_threads, sizeof(*work_restart));

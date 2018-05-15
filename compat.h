@@ -19,3 +19,4 @@ static inline int setpriority(int which, int who, int prio)
 #endif /* WIN32 */
 
 #endif /* __COMPAT_H__ */
+

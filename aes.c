@@ -1,4 +1,5 @@
 #include <stdint.h>
+#if defined(__AES__)
 #include <x86intrin.h>
 #include "wolf-aes.h"
 
@@ -146,4 +147,4 @@ void AES256CBC(__m128i** data, const __m128i** old, const __m128i** next, __m128
         }
     }
 }
-
+#endif

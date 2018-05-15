@@ -1,7 +1,7 @@
 #ifndef __MINER_H__
 #define __MINER_H__
 
-#include "cpuminer-config.h"
+#include "hodlminer-config.h"
 
 #include <stdbool.h>
 #include <inttypes.h>
@@ -171,6 +171,7 @@ extern struct thr_info *thr_info;
 extern int longpoll_thr_id;
 extern int stratum_thr_id;
 extern struct work_restart *work_restart;
+extern bool aes_ni_supported;
 extern bool opt_evp;
 
 #define JSON_RPC_LONGPOLL	(1 << 0)
